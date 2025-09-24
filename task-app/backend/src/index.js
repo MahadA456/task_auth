@@ -41,7 +41,52 @@ async function start() {
     app.use('/api', authRoutes);
     app.use('/api/tasks', taskRoutes);
 
-    app.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
+    const server = app.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
+
+    // Socket.IO setup
+    const { Server } = require('socket.io');
+    const io = new Server(server, {
+      cors: { origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE'] }
+    });
+
+    const communityRoom = 'community';
+    const presence = new Map(); // socketId -> { userId, fullName, email }
+
+    io.on('connection', (socket) => {
+      // Editing indicator
+      socket.on('community:editing:start', ({ taskId, user }) => {
+        io.to(communityRoom).emit('community:editing', { taskId, user, editing: true })
+      })
+      socket.on('community:editing:stop', ({ taskId, user }) => {
+        io.to(communityRoom).emit('community:editing', { taskId, user, editing: false })
+      })
+      socket.on('community:join', (user) => {
+        socket.join(communityRoom);
+        presence.set(socket.id, user || {});
+        io.to(communityRoom).emit('community:presence', Array.from(presence.values()));
+        if (user?.fullName || user?.email) {
+          io.to(communityRoom).emit('community:notice', { type: 'join', user });
+        }
+      });
+
+      socket.on('community:leave', () => {
+        socket.leave(communityRoom);
+        presence.delete(socket.id);
+        io.to(communityRoom).emit('community:presence', Array.from(presence.values()));
+      });
+
+      socket.on('disconnect', () => {
+        const user = presence.get(socket.id);
+        presence.delete(socket.id);
+        io.to(communityRoom).emit('community:presence', Array.from(presence.values()));
+        if (user?.fullName || user?.email) {
+          io.to(communityRoom).emit('community:notice', { type: 'leave', user });
+        }
+      });
+    });
+
+    // Expose io for routes
+    app.set('io', io);
   } catch (err) {
     console.error('Startup error:', err.message);
     process.exit(1);

@@ -37,7 +37,18 @@ export const api = {
   getTasks: () => http.get('/api/tasks').then((r) => r.data),
   createTask: (payload) => http.post('/api/tasks', payload).then((r) => r.data),
   updateTask: (id, payload) => http.put(`/api/tasks/${id}`, payload).then((r) => r.data),
-  deleteTask: (id) => http.delete(`/api/tasks/${id}`).then((r) => r.data)
+  deleteTask: (id) => http.delete(`/api/tasks/${id}`).then((r) => r.data),
+  // Community
+  getCommunityTasks: () => http.get('/api/tasks/community').then((r) => r.data),
+  createCommunityTask: (payload) => http.post('/api/tasks/community', payload).then((r) => r.data),
+  updateCommunityTask: (id, payload) => http.put(`/api/tasks/community/${id}`, payload).then((r) => r.data),
+  deleteCommunityTask: (id) => http.delete(`/api/tasks/community/${id}`).then((r) => r.data),
+  // Comments
+  getComments: (taskId) => http.get(`/api/tasks/community/${taskId}/comments`).then((r) => r.data),
+  addComment: (taskId, payload) => http.post(`/api/tasks/community/${taskId}/comments`, payload).then((r) => r.data),
+  // Reactions
+  addReaction: (taskId, emoji) => http.post(`/api/tasks/community/${taskId}/reactions`, { emoji }).then((r) => r.data),
+  removeReaction: (taskId, emoji) => http.delete(`/api/tasks/community/${taskId}/reactions`, { data: { emoji } }).then((r) => r.data)
 };
 
 

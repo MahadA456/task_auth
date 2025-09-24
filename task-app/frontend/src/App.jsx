@@ -4,6 +4,7 @@ import { useAuth } from './contexts/useAuth'
 import Login from './pages/Login'
 import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
+import Community from './pages/Community'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider } from './components/Toaster'
 import NotFound from './pages/NotFound'
@@ -28,6 +29,7 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/signup" element={<Signup />} />
               <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+              <Route path="/community" element={<PrivateRoute><Community /></PrivateRoute>} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
