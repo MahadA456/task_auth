@@ -11,7 +11,6 @@ export function AuthProvider({ children }) {
     const saved = sessionStorage.getItem('token');
     if (saved) {
       setToken(saved);
-      // Optionally decode token to get user; for now store minimal user in localStorage
       const savedUser = sessionStorage.getItem('user');
       if (savedUser) setUser(JSON.parse(savedUser));
     }
@@ -42,6 +41,5 @@ export function AuthProvider({ children }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-// no non-component exports beyond context
 
 
