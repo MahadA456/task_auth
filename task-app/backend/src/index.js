@@ -4,6 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const axios = require('axios');
 
 const authRoutes = require('./routes/auth');
 const taskRoutes = require('./routes/tasks');
@@ -26,6 +27,16 @@ async function start() {
     app.use(express.json());
 
     app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
+
+    // Example external call using axios (replace URL as needed)
+    app.get('/external/ping', async (_req, res) => {
+      try {
+        const { data } = await axios.get('https://httpbin.org/get');
+        return res.status(200).json({ ok: true, data });
+      } catch (err) {
+        return res.status(502).json({ error: 'Upstream failed', detail: err?.message });
+      }
+    });
 
     app.use('/api', authRoutes);
     app.use('/api/tasks', taskRoutes);

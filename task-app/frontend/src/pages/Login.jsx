@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/useAuth';
-import { useToast } from '../components/Toaster';
+import { useToast } from '../hooks/useToast';
 
 export default function Login() {
   const { login } = useAuth();

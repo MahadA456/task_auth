@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../contexts/useAuth';
-import { useToast } from '../components/Toaster';
+import { useToast } from '../hooks/useToast';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
