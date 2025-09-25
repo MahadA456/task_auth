@@ -28,7 +28,6 @@ async function start() {
 
     app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
-    // Example external call using axios (replace URL as needed)
     app.get('/external/ping', async (_req, res) => {
       try {
         const { data } = await axios.get('https://httpbin.org/get');
@@ -42,15 +41,13 @@ async function start() {
     app.use('/api/tasks', taskRoutes);
 
     const server = app.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
-
-    // Socket.IO setup
     const { Server } = require('socket.io');
     const io = new Server(server, {
       cors: { origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE'] }
     });
 
     const communityRoom = 'community';
-    const presence = new Map(); // socketId -> { userId, fullName, email }
+    const presence = new Map(); 
 
     io.on('connection', (socket) => {
       // Editing indicator
@@ -59,6 +56,14 @@ async function start() {
       })
       socket.on('community:editing:stop', ({ taskId, user }) => {
         io.to(communityRoom).emit('community:editing', { taskId, user, editing: false })
+      })
+      
+      // Comment typing indicators
+      socket.on('community:comment:typing:start', ({ taskId, user }) => {
+        socket.to(communityRoom).emit('community:comment:typing', { taskId, user, typing: true })
+      })
+      socket.on('community:comment:typing:stop', ({ taskId, user }) => {
+        socket.to(communityRoom).emit('community:comment:typing', { taskId, user, typing: false })
       })
       socket.on('community:join', (user) => {
         socket.join(communityRoom);

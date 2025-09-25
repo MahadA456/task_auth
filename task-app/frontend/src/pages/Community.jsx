@@ -20,6 +20,9 @@ export default function Community() {
   const [commentsByTask, setCommentsByTask] = useState({}) // taskId -> comments[]
   const [commentDrafts, setCommentDrafts] = useState({}) // taskId -> text
   const [editingByTask, setEditingByTask] = useState({}) // taskId -> { [userId]: user }
+  const [typingByTask, setTypingByTask] = useState({}) // taskId -> { [userId]: user }
+  const typingTimeouts = useRef({}) // taskId -> timeoutId
+  const [showReactionDetails, setShowReactionDetails] = useState({}) // taskId -> boolean
 
   useEffect(() => {
     let active = true
@@ -59,17 +62,29 @@ export default function Community() {
     socket.on('community:comment:created', ({ taskId, comment }) => {
       setCommentsByTask((map) => ({ ...map, [taskId]: [comment, ...(map[taskId] || [])] }))
     })
-    socket.on('community:reaction:added', ({ taskId, emoji, user: actor }) => {
+    socket.on('community:reaction:added', ({ taskId, emoji, user: actor, reaction, updatedTask }) => {
       setTasks((ts) => ts.map((t) => {
         if (t._id !== taskId) return t
+        // Use the updated task data if available, otherwise fallback to manual update
+        if (updatedTask) {
+          return updatedTask
+        }
         const reactions = Array.isArray(t.reactions) ? [...t.reactions] : []
-        reactions.push({ user: actor?.id, emoji })
+        // Only add if this reaction doesn't already exist for this user
+        const existingReaction = reactions.find(r => String(r.user) === String(actor?.id) && r.emoji === emoji)
+        if (!existingReaction) {
+          reactions.push(reaction || { user: actor?.id, emoji })
+        }
         return { ...t, reactions }
       }))
     })
-    socket.on('community:reaction:removed', ({ taskId, emoji, user: actor }) => {
+    socket.on('community:reaction:removed', ({ taskId, emoji, user: actor, updatedTask }) => {
       setTasks((ts) => ts.map((t) => {
         if (t._id !== taskId) return t
+        // Use the updated task data if available, otherwise fallback to manual update
+        if (updatedTask) {
+          return updatedTask
+        }
         const reactions = (t.reactions || []).filter((r) => !(String(r.user) === String(actor?.id) && r.emoji === emoji))
         return { ...t, reactions }
       }))
@@ -83,11 +98,26 @@ export default function Community() {
         return { ...state, [taskId]: current }
       })
     })
+    socket.on('community:comment:typing', ({ taskId, user: actor, typing }) => {
+      if (!actor?.id || actor.id === user?.id) return
+      setTypingByTask((state) => {
+        const current = { ...(state[taskId] || {}) }
+        if (typing) current[actor.id] = actor
+        else delete current[actor.id]
+        return { ...state, [taskId]: current }
+      })
+    })
 
     return () => {
       leave()
       disconnect()
       active = false
+      
+      // Clear all typing timeouts
+      Object.values(typingTimeouts.current).forEach(timeoutId => {
+        clearTimeout(timeoutId)
+      })
+      typingTimeouts.current = {}
     }
   }, [user, notify])
 
@@ -98,7 +128,7 @@ export default function Community() {
     setSaving(true)
     setError('')
     try {
-      const t = await api.createCommunityTask(form)
+      await api.createCommunityTask(form)
       setForm({ title: '', description: '', status: 'Pending' })
     } catch (e) {
       setError(e?.data?.error || 'Failed to create task')
@@ -144,17 +174,66 @@ export default function Community() {
 
   const getReactionSummary = (t) => {
     const counts = {}
-    for (const r of t.reactions || []) counts[r.emoji] = (counts[r.emoji] || 0) + 1
-    return counts
+    const usersByEmoji = {}
+    for (const r of t.reactions || []) {
+      counts[r.emoji] = (counts[r.emoji] || 0) + 1
+      if (!usersByEmoji[r.emoji]) usersByEmoji[r.emoji] = []
+      usersByEmoji[r.emoji].push(r.user)
+    }
+    return { counts, usersByEmoji }
   }
 
-  const hasReacted = (t, emoji) => (t.reactions || []).some((r) => String(r.user) === String(user?.id) && r.emoji === emoji)
+  const hasReacted = (t, emoji) => {
+    if (!user || !t.reactions) return false
+    
+    console.log(`hasReacted debug:`, {
+      user: user,
+      reactions: t.reactions,
+      emoji
+    })
+    
+    const reacted = t.reactions.some((r) => {
+      const reactionUserId = r.user?._id || r.user
+      const currentUserId = user._id || user.id
+      const isMatch = String(reactionUserId) === String(currentUserId) && r.emoji === emoji
+      
+      console.log(`Reaction check:`, {
+        reactionUserId,
+        currentUserId,
+        emoji: r.emoji,
+        targetEmoji: emoji,
+        isMatch
+      })
+      
+      return isMatch
+    })
+    
+    console.log(`hasReacted result:`, { 
+      taskId: t._id, 
+      emoji, 
+      userId: user?.id, 
+      reacted 
+    })
+    
+    return reacted
+  }
 
   const toggleReaction = async (t, emoji) => {
     try {
-      if (hasReacted(t, emoji)) await api.removeReaction(t._id, emoji)
-      else await api.addReaction(t._id, emoji)
+      const hasReactedToThis = hasReacted(t, emoji)
+      console.log(`Toggle reaction: ${emoji} on task ${t._id}, hasReacted: ${hasReactedToThis}`)
+      
+      if (hasReactedToThis) {
+        console.log('Removing reaction...')
+        await api.removeReaction(t._id, emoji)
+        notify('Reaction removed', 'success')
+      } else {
+        console.log('Adding reaction...')
+        await api.addReaction(t._id, emoji)
+        notify('Reaction added', 'success')
+      }
     } catch (e) {
+      console.error('Reaction toggle error:', e)
       notify(e?.data?.error || 'Failed to react', 'error')
     }
   }
@@ -184,6 +263,29 @@ export default function Community() {
   }
   const stopEditing = (taskId) => {
     socketRef.current?.emit('community:editing:stop', { taskId, user })
+  }
+
+  const startCommentTyping = (taskId) => {
+    socketRef.current?.emit('community:comment:typing:start', { taskId, user })
+    
+    // Clear existing timeout
+    if (typingTimeouts.current[taskId]) {
+      clearTimeout(typingTimeouts.current[taskId])
+    }
+    
+    // Set new timeout to stop typing after 3 seconds of inactivity
+    typingTimeouts.current[taskId] = setTimeout(() => {
+      stopCommentTyping(taskId)
+    }, 3000)
+  }
+  const stopCommentTyping = (taskId) => {
+    socketRef.current?.emit('community:comment:typing:stop', { taskId, user })
+    
+    // Clear timeout
+    if (typingTimeouts.current[taskId]) {
+      clearTimeout(typingTimeouts.current[taskId])
+      delete typingTimeouts.current[taskId]
+    }
   }
 
   return (
@@ -257,12 +359,50 @@ export default function Community() {
                   <div className="md:col-span-12 mt-2">
                     <div className="flex items-center gap-2 text-sm">
                       {['👍','🎉','❤️','🔥'].map((emo) => {
-                        const counts = getReactionSummary(t)
+                        const { counts, usersByEmoji } = getReactionSummary(t)
                         const active = hasReacted(t, emo)
+                        const count = counts[emo] || 0
+                        const users = usersByEmoji[emo] || []
+                        
+                        // Debug logging
+                        if (active) {
+                          console.log(`User has reacted to ${emo} on task ${t._id}`)
+                        }
                         return (
-                          <button key={emo} onClick={() => toggleReaction(t, emo)} className={`rounded-full border px-2 py-1 ${active ? 'bg-slate-900 text-white' : 'bg-white'}`}>
-                            {emo} {counts[emo] ? counts[emo] : ''}
-                          </button>
+                          <div key={emo} className="relative group">
+                            <button 
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                console.log(`Button clicked for ${emo}, active: ${active}`)
+                                toggleReaction(t, emo)
+                              }} 
+                              className={`rounded-full border-2 px-3 py-1 font-medium transition-all duration-200 cursor-pointer ${
+                                active 
+                                  ? 'bg-black text-white border-black hover:bg-gray-800 hover:scale-105' 
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              }`}
+                              title={active ? `Click to remove your ${emo} reaction` : `Click to add ${emo} reaction`}
+                            >
+                              {emo} {count > 0 ? count : ''}
+                            </button>
+                            {count > 0 && (
+                              <div className="absolute bottom-full left-0 mb-1 hidden group-hover:block bg-slate-800 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10 min-w-max">
+                                <div className="font-medium mb-1">{emo} Reactions:</div>
+                                {users.map((userData, idx) => {
+                                  const isCurrentUser = String(userData?._id || userData) === String(user?.id)
+                                  const userName = userData?.fullName || userData?.email || 'User'
+                                  return (
+                                    <div key={idx} className="flex items-center gap-2">
+                                      <span className={isCurrentUser ? 'font-medium' : ''}>
+                                        {isCurrentUser ? 'You' : userName}
+                                      </span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
                         )
                       })}
                       <button onClick={() => {
@@ -271,6 +411,12 @@ export default function Community() {
                         setOpenComments(next)
                         if (!open && !commentsByTask[t._id]) loadComments(t._id)
                       }} className="ml-2 text-slate-700 underline">{openComments[t._id] ? 'Hide' : 'Comments'}</button>
+                      <button onClick={() => {
+                        const show = !!showReactionDetails[t._id]
+                        setShowReactionDetails(prev => ({ ...prev, [t._id]: !show }))
+                      }} className="ml-2 text-slate-700 underline">
+                        {showReactionDetails[t._id] ? 'Hide Reactions' : 'Show Reactions'}
+                      </button>
                     </div>
                     {openComments[t._id] && (
                       <div className="mt-2">
@@ -283,8 +429,89 @@ export default function Community() {
                           ))}
                         </div>
                         <div className="mt-2 flex items-center gap-2">
-                          <input value={commentDrafts[t._id] || ''} onFocus={() => startEditing(t._id)} onBlur={() => stopEditing(t._id)} onChange={(e) => setCommentDrafts((m) => ({ ...m, [t._id]: e.target.value }))} placeholder="Write a comment…" className="flex-1 rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900" />
-                          <button onClick={() => submitComment(t._id)} className="rounded-md bg-slate-900 px-3 py-2 text-white hover:bg-slate-800">Send</button>
+                          <input 
+                            value={commentDrafts[t._id] || ''} 
+                            onFocus={() => {
+                              startEditing(t._id)
+                              startCommentTyping(t._id)
+                            }} 
+                            onBlur={() => {
+                              stopEditing(t._id)
+                              stopCommentTyping(t._id)
+                            }} 
+                            onChange={(e) => {
+                              setCommentDrafts((m) => ({ ...m, [t._id]: e.target.value }))
+                              // Start typing indicator and reset timeout on each keystroke
+                              startCommentTyping(t._id)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                submitComment(t._id)
+                                stopCommentTyping(t._id)
+                              }
+                            }}
+                            placeholder="Write a comment…" 
+                            className="flex-1 rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900" 
+                          />
+                          <button 
+                            onClick={() => {
+                              submitComment(t._id)
+                              stopCommentTyping(t._id)
+                            }} 
+                            className="rounded-md bg-slate-900 px-3 py-2 text-white hover:bg-slate-800"
+                          >
+                            Send
+                          </button>
+                        </div>
+                        {Object.values(typingByTask[t._id] || {}).filter(typingUser => String(typingUser._id || typingUser.id) !== String(user?.id)).length > 0 && (
+                          <div className="mt-1 text-xs text-slate-500">
+                            {Object.values(typingByTask[t._id] || {})
+                              .filter(typingUser => String(typingUser._id || typingUser.id) !== String(user?.id))
+                              .map((typingUser, idx, filteredUsers) => (
+                                <span key={idx}>
+                                  {typingUser.fullName || typingUser.email || 'Someone'} is typing...
+                                  {idx < filteredUsers.length - 1 ? ', ' : ''}
+                                </span>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {showReactionDetails[t._id] && (
+                      <div className="mt-2 p-3 bg-slate-50 rounded-md">
+                        <div className="text-sm font-medium text-slate-700 mb-2">All Reactions:</div>
+                        <div className="grid gap-2">
+                          {['👍','🎉','❤️','🔥'].map((emo) => {
+                            const { counts, usersByEmoji } = getReactionSummary(t)
+                            const count = counts[emo] || 0
+                            const users = usersByEmoji[emo] || []
+                            if (count === 0) return null
+                            
+                            return (
+                              <div key={emo} className="flex items-center gap-2">
+                                <span className="text-lg">{emo}</span>
+                                <span className="text-sm text-slate-600">({count})</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {users.map((userData, idx) => {
+                                    const isCurrentUser = String(userData?._id || userData) === String(user?.id)
+                                    const userName = userData?.fullName || userData?.email || 'User'
+                                    return (
+                                      <div key={idx} className={`flex items-center gap-1 px-2 py-1 rounded-full border text-xs ${
+                                        isCurrentUser 
+                                          ? 'bg-slate-200 border-slate-300 font-medium text-slate-900' 
+                                          : 'bg-white border-slate-200 text-slate-600'
+                                      }`}>
+                                        <span>
+                                          {isCurrentUser ? 'You' : userName}
+                                        </span>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )
+                          })}
                         </div>
                       </div>
                     )}

@@ -62,7 +62,10 @@ router.delete('/:id', async (req, res) => {
 // GET /api/tasks/community - list all community tasks
 router.get('/community', async (_req, res) => {
   try {
-    const tasks = await Task.find({ isCommunity: true }).populate('user', 'fullName email').sort({ created_at: -1 });
+    const tasks = await Task.find({ isCommunity: true })
+      .populate('user', 'fullName email')
+      .populate('reactions.user', 'fullName email')
+      .sort({ created_at: -1 });
     return res.status(200).json(tasks);
   } catch (err) {
     return res.status(500).json({ error: 'Internal server error' });
@@ -171,9 +174,20 @@ router.post('/community/:id/reactions', async (req, res) => {
     if (!task.reactions.find((r) => String(r.user) === String(req.user.id) && r.emoji === emoji)) {
       task.reactions.push({ user: req.user.id, emoji });
       await task.save();
+      
+      // Populate the reaction with user info for socket emission
+      const populatedTask = await Task.findById(task._id).populate('reactions.user', 'fullName email');
+      const newReaction = populatedTask.reactions[populatedTask.reactions.length - 1];
+      
+      const io = req.app.get('io');
+      io.to('community').emit('community:reaction:added', { 
+        taskId: String(task._id), 
+        emoji, 
+        user: req.user,
+        reaction: newReaction,
+        updatedTask: populatedTask
+      });
     }
-    const io = req.app.get('io');
-    io.to('community').emit('community:reaction:added', { taskId: String(task._id), emoji, user: req.user });
     return res.status(201).json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: 'Internal server error' });
@@ -190,9 +204,20 @@ router.delete('/community/:id/reactions', async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Task not found' });
     const before = task.reactions.length;
     task.reactions = task.reactions.filter((r) => !(String(r.user) === String(req.user.id) && r.emoji === emoji));
-    if (task.reactions.length !== before) await task.save();
-    const io = req.app.get('io');
-    io.to('community').emit('community:reaction:removed', { taskId: String(task._id), emoji, user: req.user });
+    if (task.reactions.length !== before) {
+      await task.save();
+      
+      // Populate the updated task with user info for socket emission
+      const populatedTask = await Task.findById(task._id).populate('reactions.user', 'fullName email');
+      
+      const io = req.app.get('io');
+      io.to('community').emit('community:reaction:removed', { 
+        taskId: String(task._id), 
+        emoji, 
+        user: req.user,
+        updatedTask: populatedTask
+      });
+    }
     return res.status(204).send();
   } catch (err) {
     return res.status(500).json({ error: 'Internal server error' });
